@@ -1,0 +1,127 @@
+import os
+import Components.Task
+from twisted.internet import task
+
+
+class GiveupOnSendfile(Exception):
+	pass
+
+
+class FailedPostcondition(Components.Task.Condition):
+	def __init__(self, exception):
+		self.exception = exception
+
+	def getErrorMessage(self, task):
+		return str(self.exception)
+
+	def check(self, task):
+		return self.exception is None
+
+
+class CopyFileTask(Components.Task.PythonTask):
+	def openFiles(self, fileList):
+		self.callback = None
+		self.fileList = fileList
+		self.handles = [(os.open(fn[0], os.O_RDONLY), os.open(fn[1], os.O_CREAT | os.O_EXCL | os.O_WRONLY)) for fn in fileList]
+		self.end = 0
+		for src, dst in fileList:
+			try:
+				self.end += os.stat(src).st_size
+			except:
+				print("Failed to stat", src)
+		if not self.end:
+			self.end = 1
+		print("[CopyFileTask] size:", self.end)
+
+	def work(self):
+		print("[CopyFileTask] handles ", len(self.handles))
+		try:
+			for src, dst in self.handles:
+				try:
+					count = os.stat(src).st_size
+					offset = 0
+					while True:
+						if self.aborted:
+							print("[CopyFileTask] aborting")
+							raise Exception("Aborted")
+						try:
+							l = os.sendfile(dst, src, offset, count)
+						except OSError as ex:
+							if offset == 0:
+								raise GiveupOnSendfile("sendfile failed, probably not suitable for mmap")
+						self.pos += l
+						if l < count:
+							break
+						offset += l
+				except GiveupOnSendfile as ex:
+					print("[CopyFileTask]", ex)
+					bs = 65536
+					d = bytearray(bs)
+					mv = memoryview(d)
+					while True:
+						if self.aborted:
+							print("[CopyFileTask] aborting")
+							raise Exception("Aborted")
+						n = src.readinto(d)
+						if not n:
+							dst.flush()
+							try:
+								os.fsync(dst.fileno())
+							except:
+								pass
+							os.close(src)
+							os.close(dst)
+							break
+						view = memoryview(d)[:n]
+						written_total = 0
+						while written_total < n:
+							w = dst.write(view[written_total:])
+							if w is None:
+								print("[CopyFileTask] WARN: dst.write() returned None; assuming full write of", n - written_total, "bytes")
+								break
+							written_total += w
+						self.pos += n
+						# In any event, close all handles
+			# In any event, close all handles
+			for src, dst in self.handles:
+				os.close(src)
+				os.close(dst)
+		except:
+			print("sendfile failed!")
+			for s, d in self.fileList:
+				# Remove incomplete data.
+				try:
+					os.unlink(d)
+				except:
+					pass
+			raise
+
+
+class MoveFileTask(CopyFileTask):
+	def work(self):
+		CopyFileTask.work(self)
+		print("[MoveFileTask]: delete source files")
+		errors = []
+		for s, d in self.fileList:
+			try:
+				os.unlink(s)
+			except Exception as e:
+				errors.append(e)
+		if errors:
+			raise errors[0]
+
+
+def copyFiles(fileList, name):
+	name = _("Copy") + " " + name
+	job = Components.Task.Job(name)
+	task = CopyFileTask(job, name)
+	task.openFiles(fileList)
+	Components.Task.job_manager.AddJob(job)
+
+
+def moveFiles(fileList, name):
+	name = _("Move") + " " + name
+	job = Components.Task.Job(name)
+	task = MoveFileTask(job, name)
+	task.openFiles(fileList)
+	Components.Task.job_manager.AddJob(job)
