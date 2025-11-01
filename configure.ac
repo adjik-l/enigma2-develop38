@@ -89,6 +89,7 @@ if test x"$withtextlcd" != xno ; then
 	AC_DEFINE(HAVE_TEXTLCD, 1,[Define when using an ascii based lcd device])
 fi
 AM_CONDITIONAL(HAVE_TEXTLCD, test x"$withtextlcd" != xno)
+AM_CONDITIONAL(LCD_FRAMEBUFFER_MODE, test "$MACHINE" == et8500 -o "$MACHINE" == et8500s -o "$MACHINE" == 8100s)
 
 AC_ARG_WITH(7segment,
 	AC_HELP_STRING([--with-7segment], [use 7 segment lcd, yes or no]),
